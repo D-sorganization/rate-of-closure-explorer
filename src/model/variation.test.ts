@@ -280,7 +280,10 @@ describe("analysis + export", () => {
     expect(rows).toHaveLength(4);
     const json = JSON.parse(datasetToJson(dataset)) as Record<string, unknown>;
     expect(json.schema_version).toBe(2);
-    expect((json.plan as Record<string, unknown>).n_runs).toBe(4);
+    expect(json).not.toHaveProperty("plan");
+    const planDocument = json.plan_document as Record<string, unknown>;
+    expect(planDocument.schema_version).toBe(3);
+    expect((planDocument.plan as Record<string, unknown>).n_runs).toBe(4);
   });
 
   it("failed runs export as empty CSV cells and null JSON entries", () => {
@@ -306,6 +309,6 @@ describe("analysis + export", () => {
     // ground_normal_restitution and ground_rolling_resistance, which
     // regional_ground_variation_request does from inside its parse path.
     expect(keysForMode("launch")).toHaveLength(7);
-    expect(keysForMode("delivery")).toHaveLength(7); // club category is desktop-only
+    expect(keysForMode("delivery")).toHaveLength(8); // club category is desktop-only
   });
 });

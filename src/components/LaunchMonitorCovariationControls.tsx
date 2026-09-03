@@ -1,7 +1,7 @@
 import type { CovariationUiSettings } from "../model/launchMonitorCovariation";
 import type { CovariationController } from "./useCovariationController";
 
-const field = "w-full rounded border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
+const field = "w-full rounded border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100 focus:border-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
 
 function IdentityControls({ controller, identityLocked = false }: {
   controller: CovariationController; identityLocked?: boolean;
@@ -80,10 +80,10 @@ export function LaunchMonitorCovariationControls({ controller, identityLocked = 
     <div className="flex items-end gap-2">
       <button type="button" onClick={controller.analyze}
         title="Calculate player, centered, pooled, between, and meta associations"
-        className="rounded bg-emerald-600 px-3 py-2 text-sm font-semibold hover:bg-emerald-500">Analyze Player Covariation</button>
+        className="rounded bg-emerald-600 px-3 py-2 text-sm font-semibold hover:bg-emerald-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Analyze Player Covariation</button>
       <button type="button" onClick={controller.rankPairs}
         title="Scan all numeric column pairs using the current player and sample rules"
-        className="rounded border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Rank Variable Pairs</button>
+        className="rounded border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Rank Variable Pairs</button>
     </div>
   </div>;
 }
