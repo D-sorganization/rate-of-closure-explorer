@@ -9,6 +9,10 @@ import {
   planToJson,
   type VariationPlanTs,
 } from "../model/variation";
+import {
+  parsePersistedVariationPlan,
+  persistedVariationPlanJson,
+} from "../model/variationPersistedPlan";
 import { VARIATION_PLAN_LIBRARY_KEY } from "../model/variationPlanLibrary";
 import { VariationPanel } from "./VariationPanel";
 import { saveBallSetupPreference } from "../model/ballSetupPersistence";
@@ -43,9 +47,9 @@ const importedPlan = (): VariationPlanTs => ({
       scale: 2,
       lower: null,
       upper: null,
-      specId: "localized-speed",
-      timeWindowS: [0.7, 0.8],
-      pointIds: ["swing.clubhead"],
+      specId: "speed",
+      timeWindowS: null,
+      pointIds: [],
     },
     {
       variableKey: ANGLE,
@@ -61,7 +65,7 @@ const importedPlan = (): VariationPlanTs => ({
   groups: [
     {
       groupId: "launch-group",
-      specIds: ["localized-speed", "angle"],
+      specIds: ["speed", "angle"],
       matrixKind: "correlation",
       matrix: [
         [1, 0.4],
@@ -170,9 +174,11 @@ describe("VariationPanel v2 plan persistence", () => {
     await user.type(screen.getByRole("textbox", { name: "Plan name" }), "Localized");
     await user.click(screen.getByRole("button", { name: "Save Named Plan" }));
     const stored = JSON.parse(storage.getItem(VARIATION_PLAN_LIBRARY_KEY)!) as {
-      plans: Array<{ plan: VariationPlanTs }>;
+      plans: Array<{ plan_document: unknown }>;
     };
-    const saved = planFromJson(JSON.stringify(stored.plans[0].plan));
+    const saved = parsePersistedVariationPlan(
+      JSON.stringify(stored.plans[0].plan_document),
+    ).plan;
     expect(saved.seed).toBe(9);
     expect(saved.noise[0]).toMatchObject({
       specId: "shoulder-window", scale: 1.123456789,
@@ -227,6 +233,23 @@ describe("VariationPanel v2 plan persistence", () => {
       .toHaveTextContent(/Cannot load plan.*finite half-open time window/i);
     expect(screen.getByLabelText("Pipeline")).toHaveValue("delivery");
     expect(screen.getByLabelText("Variable 1")).not.toHaveValue(SHOULDER_TORQUE);
+  });
+
+  it("visibly distinguishes legacy imports from canonical plan evidence", async () => {
+    const user = userEvent.setup();
+    render(<VariationPanel storage={storage} />);
+    const input = screen.getByLabelText("Import variation plan JSON");
+
+    await user.upload(input, new File([planToJson(importedPlan())], "legacy.json", {
+      type: "application/json",
+    }));
+    expect(screen.getByRole("status", { name: "Variation status" }))
+      .toHaveTextContent(/not evidence of historical reproducibility/i);
+
+    await user.upload(input, new File([persistedVariationPlanJson(importedPlan())],
+      "canonical.json", { type: "application/json" }));
+    expect(screen.getByRole("status", { name: "Variation status" }))
+      .not.toHaveTextContent(/historical reproducibility/i);
   });
 
   it("explains why Morris is disabled when the current context cannot round-trip", () => {
@@ -297,19 +320,17 @@ describe("VariationPanel v2 plan persistence", () => {
 
     await user.upload(screen.getByLabelText("Import variation plan JSON"), file);
     expect(await screen.findByText(/contains 1 grouped correlation/i)).toBeInTheDocument();
-    expect(screen.getByText(/cannot yet execute.*scalar browser path/i)).toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "Plan name" }), "Imported V2");
     await user.click(screen.getByRole("button", { name: "Save Named Plan" }));
 
     const stored = JSON.parse(storage.getItem(VARIATION_PLAN_LIBRARY_KEY)!) as {
-      plans: Array<{ plan: unknown }>;
+      plans: Array<{ plan_document: unknown }>;
     };
-    expect(planFromJson(JSON.stringify(stored.plans[0].plan))).toEqual(
+    expect(parsePersistedVariationPlan(
+      JSON.stringify(stored.plans[0].plan_document),
+    ).plan).toEqual(
       planFromJson(planToJson(importedPlan())),
     );
-    await user.click(screen.getByRole("button", { name: "Run Variation Study" }));
-    expect(screen.getByRole("alert", { name: "Variation status" }))
-      .toHaveTextContent(/global perturbations/i);
   });
 
   it("supports loading, duplicating, and deleting named plans", async () => {

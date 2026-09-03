@@ -1,3 +1,6 @@
+/**
+ * E2E tests verifying visibility and viewport bounds for all registered visualization tabs.
+ */
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -19,6 +22,35 @@ interface VisualEvidence {
   visibleIntersection: { width: number; height: number };
   horizontalOverflowPx: number;
 }
+
+const PAINT_SAMPLE_INTERVAL_MS = 100;
+const REQUIRED_STABLE_PAINT_SAMPLES = 3;
+const MAX_PAINT_SAMPLES = 20;
+// This registered evidence pass visits every tab at three reference viewports
+// and captures stable images for the 1440x900 authority.  The trusted runner
+// needs more than the suite's 45-second interactive-test default even when all
+// rendering contracts pass, so give this publication gate its own bounded
+// budget without relaxing any visual assertion.
+const VISUAL_EVIDENCE_TIMEOUT_MS = 180_000;
+
+const captureStablePage = async (page: Page): Promise<Buffer> => {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise<void>((resolvePaint) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolvePaint()));
+    });
+  });
+  let previous: Buffer | null = null;
+  let stableSamples = 0;
+  for (let sample = 0; sample < MAX_PAINT_SAMPLES; sample += 1) {
+    await page.waitForTimeout(PAINT_SAMPLE_INTERVAL_MS);
+    const image = await page.screenshot({ animations: "disabled", caret: "hide" });
+    stableSamples = previous?.equals(image) ? stableSamples + 1 : 1;
+    if (stableSamples >= REQUIRED_STABLE_PAINT_SAMPLES) return image;
+    previous = image;
+  }
+  throw new Error(`page paint did not stabilize within ${MAX_PAINT_SAMPLES} samples`);
+};
 
 const intersection = async (locator: Locator): Promise<VisualEvidence["visibleIntersection"]> =>
   locator.evaluate((element) => {
@@ -45,6 +77,11 @@ const auditTab = async (page: Page, tabId: string, locatorText: string,
   const tab = page.locator(`#primary-tab-${tabId}`);
   await tab.scrollIntoViewIfNeeded();
   await tab.click();
+  // Tab activation can preserve an incidental scroll anchor from the prior
+  // landmark.  Normalize before auditing so both the geometry evidence and any
+  // later initial-page capture describe the canonical top-of-page viewport.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
   const locator = page.locator(locatorText);
   await expect(locator).toHaveCount(1);
   await expect(locator).toBeVisible();
@@ -64,6 +101,7 @@ const auditTab = async (page: Page, tabId: string, locatorText: string,
 test("every registered React tab exposes its primary visual in the initial viewport", async (
   { page }, testInfo,
 ) => {
+  test.setTimeout(VISUAL_EVIDENCE_TIMEOUT_MS);
   test.skip(testInfo.project.name !== "chromium-desktop", "manifest viewport authority");
   const pageErrors = capturePageErrors(page);
   const evidence: Array<{ viewport: { width: number; height: number }; tabs: VisualEvidence[] }> = [];
@@ -101,6 +139,13 @@ test("every registered React tab exposes its primary visual in the initial viewp
       expect.soft(audited.visibleIntersection.height, `${label} visible height`)
         .toBeGreaterThanOrEqual(requiredHeight);
       expect.soft(audited.horizontalOverflowPx, `${label} document overflow`).toBe(0);
+      if (entry.tabId === "variation") {
+        // Initial-state evidence must not imply computed Morris results.  The
+        // qualified target/source controls are introduced only with a parsed,
+        // completed report and are exercised in MorrisResults.test.tsx.
+        await expect(page.getByRole("region", { name: "Morris screening results" }))
+          .toHaveCount(0);
+      }
       if (viewport.width < 1280 && entry.landmarkKind === "visual") {
         const controlSelector = reference.responsiveControlLocators[entry.tabId];
         if (controlSelector !== undefined) {
@@ -113,12 +158,60 @@ test("every registered React tab exposes its primary visual in the initial viewp
             .toBeLessThanOrEqual(controlsRect.y);
         }
       }
+      if (viewport.width < 1280 && entry.tabId === "putting") {
+        // RM #1507 (2026-09-02): the shared playback transport overflowed the
+        // 390x844 document by 6 px on Linux Chromium because the speed
+        // <select> laid out wider than its flex hypothetical size and pushed
+        // the position readout past the viewport.  Pin the readout's right
+        // edge inside the narrow viewport so the regression names its element.
+        const readout = page.locator("output[aria-label='Putt playback position']");
+        await expect(readout).toBeVisible();
+        const readoutRect = await readout.boundingBox();
+        if (readoutRect === null) throw new Error(`${label} playback readout has no rectangle`);
+        expect.soft(readoutRect.x + readoutRect.width, `${label} playback readout right edge`)
+          .toBeLessThanOrEqual(viewport.width);
+      }
       if (viewport.width === 1440 && viewport.height === 900) {
         if (entry.tabId === "explorer") {
           await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
         }
+        if (entry.tabId === "putting") {
+          // #4800 P7: the delivered-stroke parameters are part of this
+          // tab's registered surface, so the authority viewport must show
+          // them beside the primary visual rather than behind disclosure.
+          for (const control of [
+            "Aim °", "Face angle °", "Putter path °", "Strike toward toe mm",
+          ]) {
+            await expect(page.getByRole("textbox", { name: control })).toBeVisible();
+          }
+          // #4800 P8: playback rides the shared transport, so the same
+          // viewport must reach it — the Putt wording and Strike/Finish
+          // jumps that bind the subject-neutral bar.
+          for (const control of ["Play Putt", "Jump to Strike", "Jump to Finish"]) {
+            await expect(page.getByRole("button", { name: control })).toBeVisible();
+          }
+          await expect(page.getByRole("slider", { name: "Putt Time" })).toBeVisible();
+        }
+        if (entry.tabId === "launch-monitor-analytics") {
+          // ADR-0048 G1-D3: source-backed strokes gained reports its excluded
+          // rows (status plus per-reason counts) beside the result rather than
+          // dropping them in silence. That line is deliberately NOT asserted
+          // here: it only renders once a *licensed* expected-strokes baseline
+          // artifact has been loaded and every course-state column mapped, and
+          // this repository bundles no baseline table by design (see
+          // docs/rate_of_closure/SOURCE_BACKED_STROKES_GAINED.md, "Availability
+          // Boundary"). Its coverage lives in the runtime-parity suites —
+          // launchMonitorSourceBackedStrokesGained.test.ts and
+          // tests/rate_of_closure/test_launch_monitor_strokes_gained.py — which
+          // assert the same nine malformed-row cases in both runtimes. What the
+          // authority viewport does own is the panel itself staying visible and
+          // labelled as the local compatibility path.
+          await expect(
+            page.getByRole("heading", { name: "Source-Backed Strokes Gained" }),
+          ).toBeVisible();
+        }
         const file = `initial-${entry.tabId}-1440x900.png`;
-        const image = await page.screenshot({ animations: "disabled", caret: "hide" });
+        const image = await captureStablePage(page);
         await writeFile(resolve(reactCandidateRoot, file), image);
         candidates.push({
           tabId: entry.tabId,
@@ -143,7 +236,8 @@ test("every registered React tab exposes its primary visual in the initial viewp
     sourceCommit: process.env.RATE_VISUAL_BASELINE_SOURCE_COMMIT ??
       process.env.GITHUB_SHA ?? "local-diagnostic",
     surface: "react",
-    environment: `${process.platform}-chromium-desktop-1440x900-dark-reduced-motion`,
+    environment:
+      `${process.platform}-chromium-desktop-1440x900-dark-reduced-motion-inter-5.3.0`,
     captures: candidates,
   }, null, 2)}\n`);
   expect(candidates).toHaveLength(visualizationTabs("react").length);
@@ -163,5 +257,25 @@ test("visible intersection clips a landmark through an overflow ancestor", async
   expect(height).toBe(1);
   expect(height).toBeLessThan(
     visualizationReferenceEnvironments.react.responsiveMinimumVisibleHeightPx,
+  );
+});
+
+test("candidate capture waits through a scheduled browser paint", async ({ page }) => {
+  await page.setContent('<main data-paint-state="pending">Pending paint</main>');
+  await page.evaluate(() => {
+    window.setTimeout(() => {
+      const landmark = document.querySelector("[data-paint-state]");
+      if (!(landmark instanceof HTMLElement)) return;
+      landmark.dataset.paintState = "complete";
+      landmark.style.backgroundColor = "rgb(0, 128, 0)";
+    }, 150);
+  });
+
+  const image = await captureStablePage(page);
+
+  expect(image.byteLength).toBeGreaterThan(0);
+  await expect(page.locator('[data-paint-state="complete"]')).toHaveCSS(
+    "background-color",
+    "rgb(0, 128, 0)",
   );
 });

@@ -8,6 +8,7 @@ import {
   type VariationPlanTs,
 } from "../model/variation";
 import type { VariationAnalysisExecution } from "../model/variationAnalysisPolicy";
+import { parsePersistedVariationPlan } from "../model/variationPersistedPlan";
 import {
   deleteVariationPlan,
   duplicateVariationPlan,
@@ -25,6 +26,7 @@ import {
   type MorrisAuthorityBase,
 } from "../model/morrisAuthorityRequest";
 import { MorrisWorkflowPanel } from "./MorrisWorkflowPanel";
+import { DurableEnsembleWorkflowPanel } from "./DurableEnsembleWorkflowPanel";
 import { VariationSetup } from "./VariationSetup";
 import { BUTTON_CLASS, defaultVariationPlan } from "./variationUi";
 import { DRIVER_TEE_HEIGHT_M } from "../model/ballSetup";
@@ -64,7 +66,7 @@ export function VariationPanel({
   morrisUnavailableReason,
   executionService,
 }: VariationPanelProps = {}): JSX.Element {
-  const [workflow, setWorkflow] = useState<"variation" | "morris">("variation");
+  const [workflow, setWorkflow] = useState<"variation" | "durable" | "morris">("variation");
   const targetUse = spatialTarget
     ? spatialTargetForGroundWorkflow(spatialTarget, "variation")
     : { targetRegion: null, diagnostic: null };
@@ -77,6 +79,7 @@ export function VariationPanel({
     ...defaultVariationPlan(),
     ballSetup: initialBallSetup,
   }));
+  const [planEvidenceWarning, setPlanEvidenceWarning] = useState<string | null>(null);
   const [analysisExecution, setAnalysisExecution] =
     useState<VariationAnalysisExecution>("both");
   const [library, setLibrary] = useState<NamedVariationPlan[]>(initialLibrary.plans);
@@ -104,8 +107,11 @@ export function VariationPanel({
     cancel,
     invalidateResults: clearResults,
   } = execution;
+  const visibleStatus = planEvidenceWarning === null
+    ? status
+    : `${status} Evidence warning: ${planEvidenceWarning}`;
 
-  const selectWorkflow = (value: "variation" | "morris") => {
+  const selectWorkflow = (value: "variation" | "durable" | "morris") => {
     if (value !== workflow) clearResults();
     setWorkflow(value);
   };
@@ -122,10 +128,13 @@ export function VariationPanel({
 
   const importPlan = (text: string) => {
     try {
-      const loaded = planFromJson(text);
+      const resolution = parsePersistedVariationPlan(text);
+      const loaded = resolution.plan;
       setPlan(loaded);
+      setPlanEvidenceWarning(resolution.warning);
       clearResults();
-      setStatus(`Plan loaded with ${loaded.noise.length} noise rows and ${loaded.groups?.length ?? 0} groups.`);
+      const summary = `Plan loaded with ${loaded.noise.length} noise rows and ${loaded.groups?.length ?? 0} groups.`;
+      setStatus(summary);
     } catch (error) {
       setStatus(`Cannot load plan: ${(error as Error).message}`);
     }
@@ -148,6 +157,7 @@ export function VariationPanel({
     const selected = library.find((entry) => entry.id === selectedId);
     if (!selected) return;
     setPlan(planFromJson(planToJson(selected.plan)));
+    setPlanEvidenceWarning(selected.evidence?.warning ?? null);
     setPlanName(selected.name);
     clearResults();
     setStatus(`Loaded named plan “${selected.name}”.`);
@@ -186,6 +196,12 @@ export function VariationPanel({
         client={morrisClient} base={morrisBase} />
     </div>;
   }
+  if (workflow === "durable" && morrisBase !== undefined) {
+    return <div className="space-y-4">
+      <VariationWorkflowPicker value={workflow} onChange={selectWorkflow} />
+      <DurableEnsembleWorkflowPanel plan={plan} base={morrisBase} />
+    </div>;
+  }
   return (
     <div className="space-y-4">
       <VariationWorkflowPicker value={workflow} onChange={selectWorkflow}
@@ -215,7 +231,7 @@ export function VariationPanel({
           plan={plan}
           dataset={dataset}
           ensemble={ensemble}
-          status={status}
+          status={visibleStatus}
           busy={busy}
           progress={progress}
           visualState={visualState}
@@ -266,8 +282,8 @@ export function VariationPanel({
 }
 
 function VariationWorkflowPicker(props: {
-  readonly value: "variation" | "morris";
-  readonly onChange: (value: "variation" | "morris") => void;
+  readonly value: "variation" | "durable" | "morris";
+  readonly onChange: (value: "variation" | "durable" | "morris") => void;
   readonly morrisDisabled?: boolean;
   readonly morrisUnavailableReason?: string;
 }) {
@@ -278,6 +294,9 @@ function VariationWorkflowPicker(props: {
     <button type="button" aria-pressed={props.value === "morris"} className={BUTTON_CLASS}
       title={props.morrisUnavailableReason ?? "Run global Morris elementary-effects screening in the local Python authority"}
       disabled={props.morrisDisabled} onClick={() => props.onChange("morris")}>Morris Screening</button>
+    <button type="button" aria-pressed={props.value === "durable"} className={BUTTON_CLASS}
+      title={props.morrisUnavailableReason ?? "Run a checkpointed ensemble in the local Python authority"}
+      disabled={props.morrisDisabled} onClick={() => props.onChange("durable")}>Durable Ensemble Analysis</button>
     {props.morrisDisabled && props.morrisUnavailableReason && <span role="status" aria-label="Morris availability"
       className="self-center text-xs text-amber-300">
       Morris unavailable: {props.morrisUnavailableReason}
