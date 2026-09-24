@@ -62,8 +62,21 @@ export function golferAnthropometryToParams(
     throw new Error(`Golfer mass must be finite and positive: ${massKg}`);
   }
 
-  const l1 = anthro?.armLengthM ?? heightM * STANDARD_ARM_LENGTH_FRACTION;
-  const m1 = anthro?.armMassKg ?? massKg * STANDARD_ARM_MASS_FRACTION;
+  let l1 = heightM * STANDARD_ARM_LENGTH_FRACTION;
+  if (anthro?.armLengthM !== undefined && anthro?.armLengthM !== null) {
+    if (!Number.isFinite(anthro.armLengthM) || anthro.armLengthM <= 0) {
+      throw new Error(`Arm length must be finite and positive: ${anthro.armLengthM}`);
+    }
+    l1 = anthro.armLengthM;
+  }
+
+  let m1 = massKg * STANDARD_ARM_MASS_FRACTION;
+  if (anthro?.armMassKg !== undefined && anthro?.armMassKg !== null) {
+    if (!Number.isFinite(anthro.armMassKg) || anthro.armMassKg <= 0) {
+      throw new Error(`Arm mass must be finite and positive: ${anthro.armMassKg}`);
+    }
+    m1 = anthro.armMassKg;
+  }
   const lc1 = l1 * ARM_COM_FRACTION;
   const i1Com = ARM_INERTIA_SCALING * m1 * l1 * l1;
   const i1 = i1Com + m1 * lc1 * lc1;
