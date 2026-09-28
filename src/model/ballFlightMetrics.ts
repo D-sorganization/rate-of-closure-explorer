@@ -182,12 +182,18 @@ const launchValues = (inputs: FlightMetricInputs): Map<FlightMetricId, FlightMet
 
 const curve = (points: readonly MetricTrajectoryPoint[], heading: number): number => {
   const origin = points[0].positionM;
-  const lateral = points.map((sample) => {
+  // ⚡ Bolt Optimization: Use single-pass loop instead of array.map().reduce() to avoid GC pressure
+  let maxLateral = 0;
+  for (let i = 0; i < points.length; i++) {
+    const sample = points[i];
     const deltaX = sample.positionM[0] - origin[0];
     const deltaZ = sample.positionM[2] - origin[2];
-    return -Math.sin(heading) * deltaX + Math.cos(heading) * deltaZ;
-  });
-  return lateral.reduce((selected, value) => Math.abs(value) > Math.abs(selected) ? value : selected, 0);
+    const value = -Math.sin(heading) * deltaX + Math.cos(heading) * deltaZ;
+    if (Math.abs(value) > Math.abs(maxLateral)) {
+      maxLateral = value;
+    }
+  }
+  return maxLateral;
 };
 
 const landingValues = (
@@ -205,7 +211,13 @@ const landingValues = (
   values.set("landing_velocity", available("landing_velocity", point.velocityMps, "derived.linear_ground_interpolation"));
   values.set("carry_distance", available("carry_distance", Math.hypot(deltaX, deltaZ), "derived.landing_position"));
   values.set("carry_offline", available("carry_offline", deltaZ, "derived.landing_position"));
-  values.set("apex_height", available("apex_height", Math.max(...airborne.map((sample) => sample.positionM[1])), "derived.trajectory_samples"));
+  // ⚡ Bolt Optimization: Use single-pass loop instead of Math.max(...array.map(...)) to avoid GC pressure and call stack limits on large trajectory arrays
+  let apexHeight = -Infinity;
+  for (let i = 0; i < airborne.length; i++) {
+    const height = airborne[i].positionM[1];
+    if (height > apexHeight) apexHeight = height;
+  }
+  values.set("apex_height", available("apex_height", apexHeight, "derived.trajectory_samples"));
   values.set("flight_time", available("flight_time", point.timeS - first.timeS, "derived.landing_time"));
   values.set("terminal_speed", available("terminal_speed", norm(point.velocityMps), "derived.landing_velocity"));
   values.set("landing_angle", horizontal > MIN_SPEED

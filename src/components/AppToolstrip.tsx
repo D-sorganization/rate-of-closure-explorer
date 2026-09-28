@@ -1,5 +1,6 @@
-import { useRef, type KeyboardEvent } from "react";
+import { useRef, type KeyboardEvent, type RefObject } from "react";
 
+import { useViewportClampedPopover } from "./useViewportClampedPopover";
 import {
   APP_COMMAND_ID,
   commandsInGroup,
@@ -13,6 +14,7 @@ import {
   shiftPrimaryView,
   type PrimaryViewState,
 } from "../model/viewPreferences";
+import type { ViewLayout } from "../model/viewWorkspace";
 
 interface AppToolstripProps {
   readonly moduleState: PrimaryViewState;
@@ -21,6 +23,7 @@ interface AppToolstripProps {
   readonly onModuleStateChange: (state: PrimaryViewState) => void;
   readonly onCommand: (command: AppCommandId) => void;
   readonly onShortcutHelpOpenChange: (open: boolean) => void;
+  readonly onLayoutPreset?: (layout: ViewLayout) => void;
 }
 
 const MENU_CLASS =
@@ -93,10 +96,17 @@ function ShortcutDialog({ onClose }: { readonly onClose: () => void }) {
 
 function FileMenu() {
   const fileCommands = commandsInGroup("file");
+  const popover = useViewportClampedPopover();
   return (
-    <details className={MENU_CLASS}>
+    <details className={MENU_CLASS} onToggle={popover.onToggle}>
       <summary className={SUMMARY_CLASS}>File</summary>
-      <div className={POPOVER_CLASS} role="group" aria-label="File commands">
+      <div
+        ref={popover.panelRef}
+        style={popover.style}
+        className={POPOVER_CLASS}
+        role="group"
+        aria-label="File commands"
+      >
         {fileCommands.map((command) => (
           <button
             key={command.id}
@@ -178,11 +188,12 @@ function ViewMenu({
   readonly onChange: (state: PrimaryViewState) => void;
   readonly onCommand: (command: AppCommandId) => void;
 }) {
+  const popover = useViewportClampedPopover();
   const orderedModules = state.order.map((id) =>
     PRIMARY_VIEWS.find((module) => module.id === id),
   ).filter((module): module is (typeof PRIMARY_VIEWS)[number] => module !== undefined);
   return (
-    <details className={MENU_CLASS}>
+    <details className={MENU_CLASS} onToggle={popover.onToggle}>
       <summary
         data-command-id={APP_COMMAND_ID.viewManageModules}
         onClick={() => onCommand(APP_COMMAND_ID.viewManageModules)}
@@ -190,7 +201,13 @@ function ViewMenu({
       >
         View
       </summary>
-      <div className={`${POPOVER_CLASS} min-w-96`} role="group" aria-label="Workspace modules">
+      <div
+        ref={popover.panelRef}
+        style={popover.style}
+        className={`${POPOVER_CLASS} min-w-96`}
+        role="group"
+        aria-label="Workspace modules"
+      >
         <p className="mb-2 text-xs text-slate-400">Show, hide, or reorder workspace modules.</p>
         {orderedModules.map((module) => (
           <ModuleRow key={module.id} module={module} state={state} onChange={onChange} />
@@ -212,6 +229,73 @@ function ViewMenu({
   );
 }
 
+function ToolsMenu({
+  theme,
+  run,
+  shortcutTrigger,
+}: {
+  readonly theme: AppTheme;
+  readonly run: (id: AppCommandId) => void;
+  readonly shortcutTrigger: RefObject<HTMLButtonElement>;
+}) {
+  const popover = useViewportClampedPopover();
+  return (
+    <details className={MENU_CLASS} onToggle={popover.onToggle}>
+      <summary className={SUMMARY_CLASS}>Tools</summary>
+      <div
+        ref={popover.panelRef}
+        style={popover.style}
+        className={POPOVER_CLASS}
+        role="group"
+        aria-label="Global tools"
+      >
+        <button
+          type="button"
+          data-command-id={APP_COMMAND_ID.globalOpenGlossary}
+          aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalOpenGlossary)}
+          aria-label="Open Glossary"
+          onClick={() => run(APP_COMMAND_ID.globalOpenGlossary)}
+          className={COMMAND_CLASS}
+        >
+          Open Glossary <span className="float-right text-xs text-slate-500">Alt+G</span>
+        </button>
+        <button
+          type="button"
+          data-command-id={APP_COMMAND_ID.globalToggleTheme}
+          aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalToggleTheme)}
+          aria-label={`Toggle Theme; currently ${theme}`}
+          onClick={() => run(APP_COMMAND_ID.globalToggleTheme)}
+          className={COMMAND_CLASS}
+        >
+          Theme: {theme === "dark" ? "Dark" : "Light"}
+          <span className="float-right text-xs text-slate-500">Alt+T</span>
+        </button>
+        <button
+          ref={shortcutTrigger}
+          type="button"
+          data-command-id={APP_COMMAND_ID.globalShowShortcuts}
+          aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalShowShortcuts)}
+          aria-label="Keyboard Shortcuts"
+          onClick={() => run(APP_COMMAND_ID.globalShowShortcuts)}
+          className={COMMAND_CLASS}
+        >
+          Keyboard Shortcuts <span className="float-right text-xs text-slate-500">?</span>
+        </button>
+        <button
+          type="button"
+          data-command-id={APP_COMMAND_ID.globalOpenCurrentModuleHelp}
+          aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalOpenCurrentModuleHelp)}
+          aria-label="Current Module Help"
+          onClick={() => run(APP_COMMAND_ID.globalOpenCurrentModuleHelp)}
+          className={COMMAND_CLASS}
+        >
+          Current Module Help <span className="float-right text-xs text-slate-500">F1</span>
+        </button>
+      </div>
+    </details>
+  );
+}
+
 export function AppToolstrip({
   moduleState,
   theme,
@@ -219,6 +303,7 @@ export function AppToolstrip({
   onModuleStateChange,
   onCommand,
   onShortcutHelpOpenChange,
+  onLayoutPreset,
 }: AppToolstripProps) {
   const shortcutTrigger = useRef<HTMLButtonElement>(null);
   const run = (id: AppCommandId) => {
@@ -256,54 +341,25 @@ export function AppToolstrip({
                 {label}
               </button>
             ))}
+            <span className="mx-1 my-auto h-4 w-px bg-slate-700" aria-hidden="true" />
+            {([
+              ["single", "Single"],
+              ["split_horizontal", "Split"],
+              ["grid", "Grid"],
+            ] as const).map(([layout, label]) => (
+              <button
+                key={layout}
+                type="button"
+                data-layout-preset={layout}
+                title={`Apply ${label.toLowerCase()} layout preset.`}
+                onClick={() => onLayoutPreset?.(layout)}
+                className="rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-2 focus-visible:ring-sky-400"
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <details className={MENU_CLASS}>
-            <summary className={SUMMARY_CLASS}>Tools</summary>
-            <div className={POPOVER_CLASS} role="group" aria-label="Global tools">
-              <button
-                type="button"
-                data-command-id={APP_COMMAND_ID.globalOpenGlossary}
-                aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalOpenGlossary)}
-                aria-label="Open Glossary"
-                onClick={() => run(APP_COMMAND_ID.globalOpenGlossary)}
-                className={COMMAND_CLASS}
-              >
-                Open Glossary <span className="float-right text-xs text-slate-500">Alt+G</span>
-              </button>
-              <button
-                type="button"
-                data-command-id={APP_COMMAND_ID.globalToggleTheme}
-                aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalToggleTheme)}
-                aria-label={`Toggle Theme; currently ${theme}`}
-                onClick={() => run(APP_COMMAND_ID.globalToggleTheme)}
-                className={COMMAND_CLASS}
-              >
-                Theme: {theme === "dark" ? "Dark" : "Light"}
-                <span className="float-right text-xs text-slate-500">Alt+T</span>
-              </button>
-              <button
-                ref={shortcutTrigger}
-                type="button"
-                data-command-id={APP_COMMAND_ID.globalShowShortcuts}
-                aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalShowShortcuts)}
-                aria-label="Keyboard Shortcuts"
-                onClick={() => run(APP_COMMAND_ID.globalShowShortcuts)}
-                className={COMMAND_CLASS}
-              >
-                Keyboard Shortcuts <span className="float-right text-xs text-slate-500">?</span>
-              </button>
-              <button
-                type="button"
-                data-command-id={APP_COMMAND_ID.globalOpenCurrentModuleHelp}
-                aria-keyshortcuts={commandShortcut(APP_COMMAND_ID.globalOpenCurrentModuleHelp)}
-                aria-label="Current Module Help"
-                onClick={() => run(APP_COMMAND_ID.globalOpenCurrentModuleHelp)}
-                className={COMMAND_CLASS}
-              >
-                Current Module Help <span className="float-right text-xs text-slate-500">F1</span>
-              </button>
-            </div>
-          </details>
+          <ToolsMenu theme={theme} run={run} shortcutTrigger={shortcutTrigger} />
         </div>
       </div>
       {shortcutHelpOpen && <ShortcutDialog onClose={closeShortcuts} />}

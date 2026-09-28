@@ -62,7 +62,8 @@ const cross = (first: Vec3, second: Vec3): Vec3 => [
   first[2] * second[0] - first[0] * second[2],
   first[0] * second[1] - first[1] * second[0],
 ];
-const norm = (vector: Vec3): number => Math.hypot(...vector);
+// ⚡ Bolt Optimization: Use inline Math.sqrt instead of Math.hypot(...vector) to prevent spread overhead and function call GC pressure
+const norm = (vector: Vec3): number => Math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
 
 function finiteVector(vector: Vec3, name: string): void {
   if (vector.length !== 3 || vector.some((value) => !Number.isFinite(value))) {
@@ -152,7 +153,16 @@ export function projectMotion(
 }
 
 function orthogonalBasis(axis: Vec3): [Vec3, Vec3] {
-  const index = axis.map(Math.abs).indexOf(Math.min(...axis.map(Math.abs)));
+  // ⚡ Bolt Optimization: Use single-pass loop instead of Math.min(...array.map(Math.abs)) to prevent GC pressure
+  let minAbs = Infinity;
+  let index = 0;
+  for (let i = 0; i < axis.length; i++) {
+    const absVal = Math.abs(axis[i]);
+    if (absVal < minAbs) {
+      minAbs = absVal;
+      index = i;
+    }
+  }
   const seeds: Vec3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   const firstRaw = cross(axis, seeds[index]);
   const first = scale(firstRaw, 1 / norm(firstRaw));
@@ -160,7 +170,16 @@ function orthogonalBasis(axis: Vec3): [Vec3, Vec3] {
 }
 
 function dominantSign(vector: Vec3): 1 | -1 {
-  const index = vector.map(Math.abs).indexOf(Math.max(...vector.map(Math.abs)));
+  // ⚡ Bolt Optimization: Use single-pass loop instead of Math.max(...array.map(Math.abs)) to prevent GC pressure
+  let maxAbs = -Infinity;
+  let index = 0;
+  for (let i = 0; i < vector.length; i++) {
+    const absVal = Math.abs(vector[i]);
+    if (absVal > maxAbs) {
+      maxAbs = absVal;
+      index = i;
+    }
+  }
   return vector[index] >= 0 ? 1 : -1;
 }
 
