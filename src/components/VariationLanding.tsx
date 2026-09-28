@@ -7,7 +7,6 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import {
-  holdStats,
   signedDistance,
   type TargetRegionTs,
 } from "../model/targets";
@@ -31,6 +30,7 @@ export function LandingCanvas({
 }): JSX.Element {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const landingPoints = useMemo(() => pairedLandingPoints(dataset), [dataset]);
+  const ellipse = useMemo(() => dispersionEllipse(dataset), [dataset]);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
@@ -42,9 +42,6 @@ export function LandingCanvas({
     const { width, height } = canvas;
     ctx.clearRect(0, 0, width, height);
     if (points.length === 0) return;
-    const ellipse = dispersionEllipse(dataset);
-    const xs = points.map((p) => p[0]);
-    const ys = points.map((p) => p[1]);
     const pad = 2.0;
     const reach = ellipse ? ellipse.semiMajorM : 0;
     // Window includes the target region so its boundary never clips.
@@ -61,10 +58,34 @@ export function LandingCanvas({
             target.distanceM + target.bandHalfLengthM,
           ]
       : [];
-    const minX = Math.min(...xs, ...tx, (ellipse?.centerLateralM ?? 0) - reach) - pad;
-    const maxX = Math.max(...xs, ...tx, (ellipse?.centerLateralM ?? 0) + reach) + pad;
-    const minY = Math.min(...ys, ...ty, (ellipse?.centerCarryM ?? 0) - reach) - pad;
-    const maxY = Math.max(...ys, ...ty, (ellipse?.centerCarryM ?? 0) + reach) + pad;
+    // ⚡ Bolt Optimization: Calculate bounds with a single pass instead of spreading large arrays
+    // This avoids "Maximum call stack size exceeded" errors and O(N) garbage collection on hot renders
+    const ellipseCenterLat = ellipse?.centerLateralM ?? 0;
+    const ellipseCenterCarry = ellipse?.centerCarryM ?? 0;
+    let minXRaw = ellipseCenterLat - reach;
+    let maxXRaw = ellipseCenterLat + reach;
+    for (let i = 0; i < tx.length; i++) {
+      if (tx[i] < minXRaw) minXRaw = tx[i];
+      if (tx[i] > maxXRaw) maxXRaw = tx[i];
+    }
+    let minYRaw = ellipseCenterCarry - reach;
+    let maxYRaw = ellipseCenterCarry + reach;
+    for (let i = 0; i < ty.length; i++) {
+      if (ty[i] < minYRaw) minYRaw = ty[i];
+      if (ty[i] > maxYRaw) maxYRaw = ty[i];
+    }
+    for (let i = 0; i < points.length; i++) {
+      const pX = points[i][0];
+      const pY = points[i][1];
+      if (pX < minXRaw) minXRaw = pX;
+      if (pX > maxXRaw) maxXRaw = pX;
+      if (pY < minYRaw) minYRaw = pY;
+      if (pY > maxYRaw) maxYRaw = pY;
+    }
+    const minX = minXRaw - pad;
+    const maxX = maxXRaw + pad;
+    const minY = minYRaw - pad;
+    const maxY = maxYRaw + pad;
     const scale = Math.min(
       (width - 40) / (maxX - minX || 1),
       (height - 40) / (maxY - minY || 1),
@@ -112,33 +133,62 @@ export function LandingCanvas({
       ctx.stroke();
       ctx.setLineDash([]);
       // Hold-% headline: fraction of shots inside the target.
-      const { held, total } = holdStats(
-        points.map((p) => p[1]),
-        points.map((p) => p[0]),
-        target,
-      );
+      // ⚡ Bolt Optimization: Replace Math.max(...spread) and chained maps
+      // with a single-pass loop to eliminate array allocations on render
+      let held = 0;
+      let total = 0;
+      for (let i = 0; i < points.length; i++) {
+        const lateral = points[i][0];
+        const carry = points[i][1];
+        if (!Number.isFinite(carry) || !Number.isFinite(lateral)) continue;
+        total += 1;
+        if (signedDistance(target, carry, lateral) <= 0) held += 1;
+      }
       const pct = total ? ((100 * held) / total).toFixed(0) : "–";
       ctx.fillStyle = "#94a3b8";
       ctx.font = "12px sans-serif";
       ctx.fillText(`${held}/${total} shots hold the target (${pct}%)`, 8, 14);
     }
     if (ellipse) {
-      ctx.strokeStyle = "#eb6a3c";
-      ctx.setLineDash([6, 4]);
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      // Engine angle is CCW from the carry axis; canvas x = lateral.
-      ctx.ellipse(
-        px(ellipse.centerLateralM),
-        py(ellipse.centerCarryM),
-        ellipse.semiMajorM * scale,
-        ellipse.semiMinorM * scale,
-        -((90.0 - ellipse.angleDeg) * Math.PI) / 180.0,
-        0,
-        2 * Math.PI,
-      );
-      ctx.stroke();
-      ctx.setLineDash([]);
+      if (
+        ellipse.diagnostic &&
+        !ellipse.diagnostic.isNormal &&
+        ellipse.convexHull &&
+        ellipse.convexHull.length > 2
+      ) {
+        // Non-normal bivariate distribution fallback: draw convex hull envelope
+        ctx.strokeStyle = "#eab308";
+        ctx.fillStyle = "rgba(234, 179, 8, 0.08)";
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        const first = ellipse.convexHull[0];
+        ctx.moveTo(px(first[0]), py(first[1]));
+        for (let i = 1; i < ellipse.convexHull.length; i++) {
+          ctx.lineTo(px(ellipse.convexHull[i][0]), py(ellipse.convexHull[i][1]));
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        ctx.strokeStyle = "#eb6a3c";
+        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        // Engine angle is CCW from the carry axis; canvas x = lateral.
+        ctx.ellipse(
+          px(ellipse.centerLateralM),
+          py(ellipse.centerCarryM),
+          ellipse.semiMajorM * scale,
+          ellipse.semiMinorM * scale,
+          -((90.0 - ellipse.angleDeg) * Math.PI) / 180.0,
+          0,
+          2 * Math.PI,
+        );
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
     ctx.fillStyle = "#94a3b8";
     ctx.font = "11px sans-serif";
@@ -148,7 +198,7 @@ export function LandingCanvas({
     ctx.rotate(-Math.PI / 2);
     ctx.fillText("carry [m] →", 0, 0);
     ctx.restore();
-  }, [dataset, landingPoints, target]);
+  }, [dataset, ellipse, landingPoints, target]);
   const counts = ensemble && {
     hits: ensemble.runs.filter((run) => run.status === "evaluated_hit").length,
     misses: ensemble.runs.filter((run) => run.status === "evaluated_no_impact").length,
@@ -162,12 +212,21 @@ export function LandingCanvas({
         width={560}
         height={420}
         className="w-full rounded-lg border border-slate-800 bg-slate-950/60"
-        title="Landing positions of every evaluated hit, viewed from above; the dashed ellipse is the 2-sigma dispersion fit."
+        title={
+          ellipse?.diagnostic && !ellipse.diagnostic.isNormal
+            ? "Landing positions with convex hull envelope fallback (Mardia non-normal distribution)."
+            : "Landing positions of every evaluated hit, viewed from above; the dashed ellipse is the 2-sigma dispersion fit."
+        }
       />
       <p className="text-xs text-slate-400" role="status">
         {counts
           ? `Hits: ${counts.hits} · No impact: ${counts.misses} · Numerical failures: ${counts.failures} · Plotted landings: ${landingCount}. Misses and failures have no fabricated landing coordinates.`
           : `Evaluated landings: ${landingCount}/${dataset.plan.nRuns}. Scalar studies do not expose a geometric no-impact cohort.`}
+        {ellipse?.diagnostic && !ellipse.diagnostic.isNormal && (
+          <span className="ml-2 font-medium text-amber-400">
+            ⚠ Mardia non-normal (p_skew={ellipse.diagnostic.skewnessPValue.toFixed(3)}, p_kurt={ellipse.diagnostic.kurtosisPValue.toFixed(3)}): displaying convex hull envelope fallback.
+          </span>
+        )}
       </p>
     </div>
   );

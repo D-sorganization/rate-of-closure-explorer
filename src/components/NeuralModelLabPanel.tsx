@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 
 import capabilityData from "../vendored/neural_vendor_capabilities.v2.json";
-import { readLaunchMonitorFile, type LaunchMonitorRow } from "../model/launchMonitorAnalysis";
+import { launchMonitorColumns, type LaunchMonitorRow, readLaunchMonitorFile } from "../model/launchMonitorAnalysis";
 import { buildTrainingManifest, inferPortableModel, parseCapabilityManifest,
   parsePortableModel, type PortableModel } from "../model/neuralLabContract";
 
@@ -20,7 +20,13 @@ async function fileSha256(file: File): Promise<string> {
 }
 
 function CapabilityPlot({ vendors }: { readonly vendors: typeof defaultCapabilities.vendors }) {
-  const maximum = Math.max(1, ...vendors.map((vendor) => vendor.strictRowCount));
+  // ⚡ Bolt Optimization: Use single-pass loop instead of Math.max(...array.map(...))
+  let maximum = 1;
+  for (let i = 0; i < vendors.length; i++) {
+    if (vendors[i].strictRowCount > maximum) {
+      maximum = vendors[i].strictRowCount;
+    }
+  }
   return <svg viewBox="0 0 640 190" role="img" aria-label="Vendor strict eligible input rows chart" className="mb-3 h-64 w-full rounded bg-slate-950">
     <title>Strict five-input rows by vendor; availability remains policy governed</title>
     <text x="12" y="18" fill="#94a3b8">Strict eligible input rows (count)</text>
@@ -36,7 +42,11 @@ function ResidualPlot({ model }: { readonly model: PortableModel }) {
     Residual plot unavailable: {model.residuals.reason ?? "row-aligned held-out residuals were not exported."}</p>;
   const points = rows.flatMap((row, index) => typeof row.residual === "number" ? [{ x: index, y: row.residual }] : []);
   if (!points.length) return <p role="status" className="text-amber-300">Residual plot unavailable: residual rows lack finite residual values.</p>;
-  const extent = Math.max(1, ...points.map(({ y }) => Math.abs(y)));
+  let extent = 1;
+  for (let i = 0; i < points.length; i++) {
+    const absY = Math.abs(points[i].y);
+    if (absY > extent) extent = absY;
+  }
   return <svg viewBox="0 0 640 220" role="img" aria-label="Held-out residual by aligned row plot" className="w-full rounded bg-slate-950">
     <title>Held-out residual by aligned row; zero is perfect prediction</title>
     <line x1="45" x2="625" y1="110" y2="110" stroke="#64748b"/><text x="5" y="18" fill="#94a3b8">Residual (target unit)</text>
@@ -58,7 +68,7 @@ export function NeuralModelLabPanel() {
   const [model, setModel] = useState<PortableModel | null>(null); const [inputs, setInputs] = useState<Record<string, number>>({});
   const [prediction, setPrediction] = useState<ReturnType<typeof inferPortableModel> | null>(null);
   const [message, setMessage] = useState("No private training request submitted.");
-  const columns = useMemo(() => [...new Set(rows.flatMap((row) => Object.keys(row)))].sort(), [rows]);
+  const columns = useMemo(() => launchMonitorColumns(rows), [rows]);
 
   const manifest = () => buildTrainingManifest({ datasetId: datasetName, repository, commit,
     datasetPath: datasetName, sha256: datasetSha, rowCount: rows.length }, rows,

@@ -18,6 +18,19 @@ reachable from any live state and `abandoned` from `parked`.
 
 ## Active
 
+### DL-0002 · Sync Tools 855a10cda
+
+- **State:** in_progress
+- **Issue:** https://github.com/D-sorganization/public-web-management/issues/4
+- **Branch:** `sync/tools-855a10cda`
+- **Owner:** local
+- **PR:** not created
+- **Paths:** `src/`, `tests/`, `e2e/`, `package.json`, `package-lock.json`, `tailwind.config.js`, `tsconfig.json`, `tsconfig.node.json`, `vite.config.ts`
+- **Started:** 2026-09-28
+- **Last verified:** 2026-09-28 (`0da2b9b`)
+- **Next step:** Create PR, verify CI, merge and deploy.
+- **Summary:** Resync mirror to canonical Tools `src/rate_of_closure/web` at commit `855a10cda` (public-web-management#4).
+
 ### DL-0001 · Sync Tools B7Be9Cc2
 
 - **State:** parked

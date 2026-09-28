@@ -145,9 +145,20 @@ function GreenView(props: PuttingVisualsProps) {
   const { result, plan } = props;
   if (!result || !plan) return <p className="text-sm text-slate-400">Inputs out of range.</p>;
   const samples = plan.samples;
-  const maxX = Math.max(props.holeX + 0.5, ...samples.map(({ xM }) => xM)) + 0.3;
-  const minX = Math.min(0, ...samples.map(({ xM }) => xM)) - 0.3;
-  const spanY = Math.max(0.8, 2 * Math.max(...samples.map(({ yM }) => Math.abs(yM)), 0.3));
+  // ⚡ Bolt Optimization: Use single-pass loop for charting domain bounds
+  let minXRaw = 0;
+  let maxXRaw = props.holeX + 0.5;
+  let maxYAbs = 0.3;
+  for (let i = 0; i < samples.length; i++) {
+    const { xM, yM } = samples[i];
+    if (xM < minXRaw) minXRaw = xM;
+    if (xM > maxXRaw) maxXRaw = xM;
+    const yAbs = Math.abs(yM);
+    if (yAbs > maxYAbs) maxYAbs = yAbs;
+  }
+  const maxX = maxXRaw + 0.3;
+  const minX = minXRaw - 0.3;
+  const spanY = Math.max(0.8, 2 * maxYAbs);
   const scaleX = (value: number) => ((value - minX) / (maxX - minX)) * PATH_WIDTH;
   const scaleY = (value: number) => PATH_HEIGHT / 2 - (value / spanY) * PATH_HEIGHT;
   const points = samples.map(({ rawIndex, xM, yM }) => ({
@@ -203,7 +214,16 @@ function SpeedPlot(props: PuttingVisualsProps) {
   const { result, plan } = props;
   if (!result || !plan) return null;
   const maxDistance = Math.max(plan.cumulativeDistanceM[plan.rawCount - 1], 0.1);
-  const maxSpeed = Math.max(...plan.samples.map(({ speedMps }) => speedMps), captureSpeedMps()) * 1.08;
+
+  // ⚡ Bolt Optimization: Use single-pass loop instead of Math.max(...array.map(...))
+  let maxSpeedRaw = captureSpeedMps();
+  for (let i = 0; i < plan.samples.length; i++) {
+    if (plan.samples[i].speedMps > maxSpeedRaw) {
+      maxSpeedRaw = plan.samples[i].speedMps;
+    }
+  }
+  const maxSpeed = maxSpeedRaw * 1.08;
+
   const scaleX = (value: number) => (value / maxDistance) * (SPEED_WIDTH - 20) + 10;
   const scaleY = (value: number) => SPEED_HEIGHT - 16 - (value / maxSpeed) * (SPEED_HEIGHT - 32);
   const points = plan.samples.map(({ rawIndex, cumulativeDistanceM, speedMps }) => ({
