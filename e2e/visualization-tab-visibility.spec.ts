@@ -33,13 +33,28 @@ const MAX_PAINT_SAMPLES = 20;
 // budget without relaxing any visual assertion.
 const VISUAL_EVIDENCE_TIMEOUT_MS = 180_000;
 
+// #5454: the tab pills use `transition-all`, and a transition that is still
+// interpolating a border or glow when the screenshot is taken leaves
+// run-to-run anti-aliasing noise in the tab strip, so candidate hashes differed
+// between runs on the same commit.  Snapping transitions and animations to
+// their end state changes only timing, never the settled pixels, and no
+// assertion or tolerance is involved.  Injected once per page.
+const SETTLE_STYLE_ID = "visual-baseline-settle-style";
+
 const captureStablePage = async (page: Page): Promise<Buffer> => {
-  await page.evaluate(async () => {
+  await page.evaluate(async (styleId) => {
+    if (document.getElementById(styleId) === null) {
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent =
+        "*, *::before, *::after { transition: none !important; animation: none !important; }";
+      document.head.appendChild(style);
+    }
     await document.fonts.ready;
     await new Promise<void>((resolvePaint) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolvePaint()));
     });
-  });
+  }, SETTLE_STYLE_ID);
   let previous: Buffer | null = null;
   let stableSamples = 0;
   for (let sample = 0; sample < MAX_PAINT_SAMPLES; sample += 1) {
@@ -71,6 +86,21 @@ const intersection = async (locator: Locator): Promise<VisualEvidence["visibleIn
     const right = Math.min(rect.right, innerWidth); const bottom = Math.min(rect.bottom, innerHeight);
     return { width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
   });
+
+type ManifestTab = ReturnType<typeof visualizationTabs>[number];
+
+/** Manifest-owned minimum visible landmark size for one reference viewport. */
+const requiredVisibleSize = (
+  entry: ManifestTab, viewport: { width: number; height: number },
+): { width: number; height: number } => {
+  const reference = visualizationReferenceEnvironments.react;
+  const desktop = viewport.width >= 1280;
+  return {
+    width: entry.landmarkKind === "semantic-content" ? 1
+      : desktop ? reference.minimumVisibleWidthPx : reference.responsiveMinimumVisibleWidthPx,
+    height: desktop ? entry.minimumVisibleHeightPx : reference.responsiveMinimumVisibleHeightPx,
+  };
+};
 
 const auditTab = async (page: Page, tabId: string, locatorText: string,
   classification: string, minimumVisibleHeightPx: number): Promise<VisualEvidence> => {
@@ -128,16 +158,11 @@ test("every registered React tab exposes its primary visual in the initial viewp
       const label = `${entry.tabId} at ${viewport.width}x${viewport.height}`;
       expect.soft(audited.rect.width, `${label} width`).toBeGreaterThan(0);
       expect.soft(audited.rect.height, `${label} height`).toBeGreaterThan(0);
-      const requiredWidth = entry.landmarkKind === "semantic-content" ? 1
-        : viewport.width >= 1280 ? reference.minimumVisibleWidthPx
-          : reference.responsiveMinimumVisibleWidthPx;
+      const required = requiredVisibleSize(entry, viewport);
       expect.soft(audited.visibleIntersection.width, `${label} visible width`)
-        .toBeGreaterThanOrEqual(requiredWidth);
-      const requiredHeight = viewport.width >= 1280
-        ? entry.minimumVisibleHeightPx
-        : reference.responsiveMinimumVisibleHeightPx;
+        .toBeGreaterThanOrEqual(required.width);
       expect.soft(audited.visibleIntersection.height, `${label} visible height`)
-        .toBeGreaterThanOrEqual(requiredHeight);
+        .toBeGreaterThanOrEqual(required.height);
       expect.soft(audited.horizontalOverflowPx, `${label} document overflow`).toBe(0);
       if (entry.tabId === "variation") {
         // Initial-state evidence must not imply computed Morris results.  The
@@ -253,6 +278,147 @@ test("every registered React tab exposes its primary visual in the initial viewp
     captures: candidates,
   }, null, 2)}\n`);
   expect(candidates).toHaveLength(visualizationTabs("react").length);
+  expect(pageErrors).toEqual([]);
+});
+
+test("1440x900 visual-baseline candidates are deterministic across fresh sessions", async (
+  { browser }, testInfo,
+) => {
+  // #5454: capture every registered React tab in two independent browser
+  // contexts on the same build and require byte-identical images, so a real
+  // visual change is distinguishable from run-to-run noise.
+  test.setTimeout(VISUAL_EVIDENCE_TIMEOUT_MS);
+  test.skip(testInfo.project.name !== "chromium-desktop", "manifest viewport authority");
+  const captureAll = async (): Promise<Record<string, string>> => {
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      colorScheme: "dark",
+      reducedMotion: "reduce",
+    });
+    try {
+      const page = await context.newPage();
+      await page.goto("/");
+      const hashes: Record<string, string> = {};
+      for (const entry of visualizationTabs("react")) {
+        const tab = page.locator(`#primary-tab-${entry.tabId}`);
+        await tab.scrollIntoViewIfNeeded();
+        await tab.click();
+        await page.evaluate(() => window.scrollTo(0, 0));
+        hashes[entry.tabId] = createHash("sha256")
+          .update(await captureStablePage(page)).digest("hex");
+      }
+      return hashes;
+    } finally {
+      await context.close();
+    }
+  };
+  const first = await captureAll();
+  const second = await captureAll();
+  expect(second).toEqual(first);
+});
+
+const DEMO_SOURCE = "Source: Built-In Demonstration Data";
+const LAUNCH_MONITOR_IMPORT = {
+  name: "imported-launch-monitor.csv",
+  mimeType: "text/csv",
+  buffer: Buffer.from([
+    "club_speed,attack_angle,ball_speed,monitor_vendor",
+    ...Array.from({ length: 40 }, (_, index) =>
+      `${40 + 0.2 * index},${-3 + 0.1 * (index % 11)},${58 + 0.3 * index},` +
+      `${index % 2 ? "TrackMan" : "Foresight"}`),
+  ].join("\n")),
+};
+// One numeric column cannot form a relationship, so the import fails closed.
+const MALFORMED_LAUNCH_MONITOR_IMPORT = {
+  name: "malformed-launch-monitor.csv",
+  mimeType: "text/csv",
+  buffer: Buffer.from("ball_speed\n60\n61\n62\n"),
+};
+
+test("launch monitor scatter stays in the first viewport through every registered state", async (
+  { page }, testInfo,
+) => {
+  // #4433: the initial-state audit above cannot see a visual that a later
+  // state pushes below the fold.  Drive result, error, loading, and the
+  // demonstration (empty) preview through the production handlers and
+  // re-measure the registered landmark from the top of the page each time.
+  test.setTimeout(VISUAL_EVIDENCE_TIMEOUT_MS);
+  test.skip(testInfo.project.name !== "chromium-desktop", "manifest viewport authority");
+  const entry = visualizationTabs("react")
+    .find((candidate) => candidate.tabId === "launch-monitor-analytics");
+  if (entry === undefined) throw new Error("launch-monitor-analytics is not registered");
+  expect(Object.keys(entry.states).sort()).toEqual(["empty", "error", "loading", "result"]);
+  const pageErrors = capturePageErrors(page);
+  // Hold browser file reads open on request so the pending import is observable.
+  await page.addInitScript(() => {
+    const gate = window as unknown as { holdReads?: boolean; releaseRead?: () => void };
+    const read = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = function heldArrayBuffer(this: Blob) {
+      if (gate.holdReads !== true) return read.call(this);
+      return new Promise<ArrayBuffer>((resolveRead) => {
+        gate.releaseRead = () => resolveRead(read.call(this));
+      });
+    };
+  });
+  const reference = visualizationReferenceEnvironments.react;
+  const viewports = [reference.viewportPx, ...reference.additionalViewportsPx]
+    .map(([width, height]) => ({ width, height }));
+  const visual = page.locator(entry.primaryVisualLocator);
+  const fileInput = page.getByLabel("Launch monitor CSV or JSON file");
+  const source = page.getByText(/^Source: /);
+  const correlations = page.getByRole("heading", { name: "Correlations and Multiplicity Control" });
+  for (const viewport of viewports) {
+    const assertFirstViewport = async (state: string): Promise<void> => {
+      const label = `launch-monitor-analytics ${state} at ${viewport.width}x${viewport.height}`;
+      await page.evaluate(() => window.scrollTo(0, 0));
+      expect(await page.evaluate(() => window.scrollY), `${label} scroll`).toBe(0);
+      await expect(visual, label).toHaveCount(1);
+      await expect(visual, label).toBeVisible();
+      const visible = await intersection(visual);
+      const required = requiredVisibleSize(entry, viewport);
+      expect.soft(visible.width, `${label} visible width`)
+        .toBeGreaterThanOrEqual(required.width);
+      expect.soft(visible.height, `${label} visible height`)
+        .toBeGreaterThanOrEqual(required.height);
+      const overflow = await page.evaluate(() => {
+        const scroller = document.scrollingElement ?? document.documentElement;
+        return scroller.scrollWidth - scroller.clientWidth;
+      });
+      expect.soft(overflow, `${label} document overflow`).toBeLessThanOrEqual(0);
+    };
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+    await page.locator(`#primary-tab-${entry.tabId}`).click();
+
+    await page.getByRole("button", { name: "Run Analysis" }).click();
+    await expect(correlations).toBeVisible();
+    await assertFirstViewport("result");
+
+    await fileInput.setInputFiles(MALFORMED_LAUNCH_MONITOR_IMPORT);
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(source).toContainText(DEMO_SOURCE);
+    await expect(correlations, "prior result retained beside the error").toBeVisible();
+    await assertFirstViewport("error");
+
+    await page.evaluate(() => { (window as unknown as { holdReads: boolean }).holdReads = true; });
+    await fileInput.setInputFiles(LAUNCH_MONITOR_IMPORT);
+    await page.waitForFunction(() => typeof (window as unknown as {
+      releaseRead?: () => void;
+    }).releaseRead === "function");
+    await expect(source, "import is still pending").toContainText(DEMO_SOURCE);
+    await assertFirstViewport("loading");
+    await page.evaluate(() => {
+      const gate = window as unknown as { holdReads: boolean; releaseRead?: () => void };
+      gate.holdReads = false;
+      gate.releaseRead?.();
+    });
+    await expect(source).toContainText(LAUNCH_MONITOR_IMPORT.name);
+
+    await page.getByRole("button", { name: "Load Demo" }).click();
+    await expect(source).toContainText(DEMO_SOURCE);
+    await expect(correlations).toHaveCount(0);
+    await assertFirstViewport("empty");
+  }
   expect(pageErrors).toEqual([]);
 });
 
